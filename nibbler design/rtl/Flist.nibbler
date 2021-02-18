@@ -1,0 +1,12 @@
++incdir+../include
+
+nibbler-ClkEnBuf.v
+nibbler-Core.v
+nibbler-CoreDpathAlu.v
+nibbler-CoreDpathRegfile.v
+nibbler-Ctrl.v
+nibbler-DeserializedReg.v
+nibbler-Dpath.v
+nibbler-PCComputation.v
+nibbler-SIMDLaneDpath.v
+nibbler-ShiftDemux.v
