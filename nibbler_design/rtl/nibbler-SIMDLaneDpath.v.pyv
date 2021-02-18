@@ -1,0 +1,386 @@
+
+`ifndef NIBBLER_SIMD_LANE_DPATH_V
+`define NIBBLER_SIMD_LANE_DPATH_V
+
+module nibbler_SIMDLaneDpath
+(
+
+  input         clk,
+  input         reset,
+
+  // Register Interface with Mem
+  input   [4:0] rega_addr_Rhl,
+  input   [4:0] regb_addr_Rhl,
+  input         wb_en_Xhl,
+  input   [4:0] wb_addr_Xhl,
+  
+  // ALU Inputs
+  `ifdef NIBBLER_VECTOR_SHIFT 
+  input                 shamt_reg_en_Xhl,
+  input                 shamt_mux_sel_Xhl,
+  input                 adj_sw_mux_sel_Xhl,
+  input                 adj_sw_reg_en_Xhl,
+  input                 a_offset_mux_sel_Rhl,
+  input                 a_offset_mux_sel_Xhl,
+  input                 wb_to_shift_Xhl,
+  input                 rf_access_dir_Xhl,
+  input [4:0]           shamt_imm_Xhl,
+  input                 shift_inst_dir_Xhl,
+  input                 a_rd_tmp_Xhl,
+  `endif
+  input                 a_mux_sel_Xhl,
+<%
+
+from pyhplib import *
+print '  input ['+str(NIBBLER_P_NBITS-1)+':0]   pc_plus4_mux_out_Xhl,'
+print '  input ['+str(NIBBLER_P_NBITS-1)+':0]   b_imm_Xhl,'
+%>
+  input                 b_mux_sel_Xhl,
+<%
+print '  input ['+str(NIBBLER_C_OFFBITS-1)+':0] a_subword_off_Rhl,'
+print '  input ['+str(NIBBLER_C_OFFBITS-1)+':0] b_subword_off_Rhl,'
+print '  input ['+str(NIBBLER_C_OFFBITS-1)+':0] wb_subword_off_Xhl,'
+%>
+  input       addsub_fn_Xhl,
+  input [1:0] logic_fn_Xhl,
+  input [1:0] alu_fn_type_Xhl,
+
+  input         prop_flag_Xhl,
+  input         carry_in_1_Xhl,
+  input         last_uop_Xhl,
+  input         flag_reg_en_Xhl,
+  input         br_reg_en_Xhl,
+
+  //TEMP: To be refactored out of here?
+  input  [31:0] addr_reg_Xhl,
+
+
+  // Memory outputs
+  output [31:0] dmemreq_msg_addr,
+  // Outputs to PC logic
+  output reg    b_use_imm_reg_Xhl,
+<%
+print '  output reg ['+str(NIBBLER_P_NBITS-1)+':0] alu_mux_out_Xhl   // For use in addr_reg and proc2_cop'
+%>
+
+);
+
+<%
+print '  localparam NIBBLER_P_NBITS = '+str(NIBBLER_P_NBITS) + ';'
+print '  localparam NIBBLER_C_LOG_NBITS = '+str(NIBBLER_C_LOG_NBITS) + ';'
+print '  localparam NIBBLER_C_OFFBITS = '+str(NIBBLER_C_OFFBITS) + ';'
+%>
+
+//-------------------------
+  // Register Read Stage (R)
+  //-------------------------
+  // Declarations
+  wire [NIBBLER_P_NBITS-1:0] a_data_Rhl;
+  wire [NIBBLER_P_NBITS-1:0] b_data_Rhl;
+  wire [NIBBLER_C_OFFBITS-1:0] a_subword_idx_Rhl;
+
+  // Regfile
+  nibbler_CoreDpathRegfile rfile
+  (
+    .clk     (clk),
+    // Register read
+    .raddr0_Rhl  (rega_addr_Rhl),
+    .roff0_Rhl   (a_subword_idx_Rhl),
+    .rdata0_Rhl  (a_data_Rhl),
+
+    .raddr1_Rhl  (regb_addr_Rhl),
+    .roff1_Rhl   (b_subword_off_Rhl),
+    .rdata1_Rhl  (b_data_Rhl),
+
+    // Register write
+    .wen_Xhl     (wb_en_Xhl),
+    .waddr_Xhl   (wb_addr_Xhl),
+    .woffset_Xhl (wb_subword_off_Xhl),
+    .wdata_Xhl   (alu_mux_out_Xhl)
+  );
+
+  //-------------------
+  // Execute Stage (X)
+  //-------------------
+  reg [NIBBLER_P_NBITS-1:0] a_data_Xhl;
+  reg [NIBBLER_P_NBITS-1:0] b_data_Xhl;
+
+
+  always @ (posedge clk) begin
+    a_data_Xhl <= a_data_Rhl;
+    b_data_Xhl <= b_data_Rhl;
+  end
+
+  wire [NIBBLER_P_NBITS-1:0] a_reg_mux_out_Xhl;
+
+  assign a_reg_mux_out_Xhl = a_data_Xhl;
+
+  wire [NIBBLER_P_NBITS-1:0] a_mux_out_Xhl = a_mux_sel_Xhl ? pc_plus4_mux_out_Xhl : a_reg_mux_out_Xhl;
+
+  wire [NIBBLER_P_NBITS-1:0] b_imm_mux_out_Xhl = b_use_imm_reg_Xhl ? b_imm_Xhl : {NIBBLER_P_NBITS{1'b0}}; 
+
+  wire [NIBBLER_P_NBITS-1:0] b_mux_out_Xhl = b_mux_sel_Xhl ? b_data_Xhl : b_imm_mux_out_Xhl;
+
+  
+  reg carry_out_reg_Xhl;
+  reg msb_reg_Xhl;
+  // Microcode sets prop_flag_Xhl high if it propagates either the MSB (carry_in_1=1) or carry out (carry_in_1=0) 
+  wire cmp_flag_type_Xhl = carry_in_1_Xhl; 
+  wire cmp_flag_mux_out_Xhl = cmp_flag_type_Xhl ? msb_reg_Xhl : carry_out_reg_Xhl;
+  // Otherwise, carry-in is set constant. Use that constant.
+  wire carry_in_Xhl = prop_flag_Xhl ? cmp_flag_mux_out_Xhl : carry_in_1_Xhl;
+  
+  // ALU
+  wire [NIBBLER_P_NBITS-1:0] sum_out_Xhl;
+  wire carry_out_Xhl;
+  wire a_b_not_eq_Xhl;
+  wire [NIBBLER_P_NBITS-1:0] fn_out_Xhl;
+  `ifdef NIBBLER_VECTOR_SHIFT
+  reg                       signed_off_msb_Xhl;
+  reg [NIBBLER_P_NBITS-1:0] adj_sw_sh_reg_Xhl;
+  wire [NIBBLER_P_NBITS-1:0] shift_out_Xhl;
+<%
+if NIBBLER_P_NBITS == 1:
+  print "      reg bitwise_shamt_reg_Xhl; // dummy for bit-serial"
+else:
+  print "      reg [NIBBLER_C_LOG_NBITS-1:0] bitwise_shamt_reg_Xhl;"
+%>
+  `endif
+
+  nibbler_CoreDpathAlu alu
+  (
+    .in_a         (a_mux_out_Xhl),
+    .in_b         (b_mux_out_Xhl),      
+    .in_c         (carry_in_Xhl),
+    .addsub_fn    (addsub_fn_Xhl),
+    .logic_fn     (logic_fn_Xhl),
+`ifdef NIBBLER_VECTOR_SHIFT
+    .shift_dir           (shift_inst_dir_Xhl),
+    .signed_off_msb      (signed_off_msb_Xhl),
+    .bitwise_subword_sel (a_offset_mux_sel_Xhl),
+    .in_adj_subword      (adj_sw_sh_reg_Xhl),
+    .bitwise_shamt       (bitwise_shamt_reg_Xhl),
+    .shift_out           (shift_out_Xhl),
+`endif
+
+    .sum_out      (sum_out_Xhl),     
+    .carry_out    (carry_out_Xhl),
+    .a_b_not_eq   (a_b_not_eq_Xhl),
+    .fn_out       (fn_out_Xhl)
+  );
+
+
+  localparam INST_ARITH = 2'b00;
+  localparam INST_JALR  = 2'b11;
+  localparam INST_LOGIC = 2'b01;
+  localparam INST_SHIFT = 2'b10;
+
+
+  always @ (*) begin
+    alu_mux_out_Xhl = sum_out_Xhl;
+    case (alu_fn_type_Xhl)
+      INST_ARITH: alu_mux_out_Xhl = sum_out_Xhl;
+      INST_JALR:  alu_mux_out_Xhl = sum_out_Xhl & {{(NIBBLER_P_NBITS-1){1'b1}}, 1'b0}; // Bitwize and with fffe for jalr.
+      INST_LOGIC: alu_mux_out_Xhl = fn_out_Xhl;
+      `ifdef NIBBLER_VECTOR_SHIFT
+      INST_SHIFT: alu_mux_out_Xhl = shift_out_Xhl;
+      `endif
+      default:    alu_mux_out_Xhl = sum_out_Xhl;
+    endcase
+  end
+
+
+  // Carry-in/out flag register
+  //----------------------------
+  // Used in ADD/SUB ALU operations
+  reg carry_out_reg_Xhl_next;
+  always @ (*)
+  begin
+    carry_out_reg_Xhl_next = carry_out_reg_Xhl;
+    if (reset) begin
+      carry_out_reg_Xhl_next = 1'b0;
+    end else if (flag_reg_en_Xhl) begin
+      carry_out_reg_Xhl_next = carry_out_Xhl;
+    end
+  end
+
+  always @(posedge clk) begin
+    carry_out_reg_Xhl <= carry_out_reg_Xhl_next;
+  end
+
+  // MSB flag register
+  //-------------------
+  // Used for less-than comparisons
+  // Flag is set if A < B
+  // Less than Function: (!(!AB) & SUM) || A!B
+  // They are same sign and Difference produces a negative result || A is negative is B is Positive
+  reg msb_reg_Xhl_next;
+  always @ (*)
+  begin
+    msb_reg_Xhl_next = msb_reg_Xhl;
+    if (reset) begin
+      msb_reg_Xhl_next = 1'b0;
+    end else if (flag_reg_en_Xhl) begin
+      msb_reg_Xhl_next = (!(!a_mux_out_Xhl[NIBBLER_P_NBITS-1] && b_mux_out_Xhl[NIBBLER_P_NBITS-1]) && sum_out_Xhl[NIBBLER_P_NBITS-1]) || (a_mux_out_Xhl[NIBBLER_P_NBITS-1] && !b_mux_out_Xhl[NIBBLER_P_NBITS-1]);
+    end
+  end
+
+  always @(posedge clk) begin
+    msb_reg_Xhl <= msb_reg_Xhl_next;
+  end
+
+  // Equality flag state register
+  //------------------------------
+  // Flag is set if inequality detected
+  // When not propagating flags, base on current inputs
+  // When propagating inputs,raise flag on first unequal pair of inputs and keep flag high
+  // Setting carry_in_1_Xhl has undefined behavior
+  reg eq_flag_reg_Xhl_next;
+  reg eq_flag_reg_Xhl;
+  always @(*)
+  begin
+    eq_flag_reg_Xhl_next = eq_flag_reg_Xhl;
+    if (reset) begin
+      eq_flag_reg_Xhl_next = 1'b0;
+
+    end else if (flag_reg_en_Xhl) begin
+      eq_flag_reg_Xhl_next =  prop_flag_Xhl ? (a_b_not_eq_Xhl || eq_flag_reg_Xhl) 
+                            :(carry_in_1_Xhl ? 1'b1 : a_b_not_eq_Xhl);
+    end
+  end
+
+  always @(posedge clk)
+  begin
+    eq_flag_reg_Xhl <= eq_flag_reg_Xhl_next;
+  end
+
+  // B immediate select register
+  //-----------------------------
+  //   Indicates whether branch is taken and selects either branch offset or 0 to add to PC
+
+
+  // reg branch_taken_Xhl;
+  // case (branch_type_Xhl)
+  //   BR_BNE: branch_taken_Xhl =   a_b_not_eq_Xhl || eq_flag_reg_Xhl;
+  //   BR_BEQ: branch_taken_Xhl = !(a_b_not_eq_Xhl || eq_flag_reg_Xhl);
+  //   default: branch_taken_Xhl = 1'b0;
+  // endcase
+  wire branch_taken_Xhl = a_b_not_eq_Xhl || eq_flag_reg_Xhl;
+
+  reg b_use_imm_reg_Xhl_next;
+  always @(*) 
+  begin
+    b_use_imm_reg_Xhl_next = b_use_imm_reg_Xhl;
+    if (reset) begin
+      b_use_imm_reg_Xhl_next = 1'b1;
+    end else if (last_uop_Xhl) begin // Set to use immediates by default every instruction
+      b_use_imm_reg_Xhl_next = 1'b1; 
+    end else if (br_reg_en_Xhl) begin // Set b_imm_mux_out_Xhl to 0 if branch is not taken.
+      b_use_imm_reg_Xhl_next = branch_taken_Xhl;
+    end  
+  end
+
+  always @(posedge clk) begin
+    b_use_imm_reg_Xhl <= b_use_imm_reg_Xhl_next;
+  end
+    
+
+
+  `ifdef NIBBLER_VECTOR_SHIFT 
+
+  // Adjacent Subword Regiser
+  //--------------------------
+  reg [NIBBLER_P_NBITS-1:0] adj_sw_sh_reg_Xhl_next;
+  always @(*)
+  begin
+    adj_sw_sh_reg_Xhl_next = adj_sw_sh_reg_Xhl;
+    if (reset) begin
+      adj_sw_sh_reg_Xhl_next = {NIBBLER_P_NBITS{1'b0}};
+    end else if (adj_sw_reg_en_Xhl) begin
+      adj_sw_sh_reg_Xhl_next = adj_sw_mux_sel_Xhl ? {NIBBLER_P_NBITS{msb_reg_Xhl}} : a_mux_out_Xhl;
+    end
+  end
+
+  // Gate Clock
+  wire adj_gate_en_Xhl = !(adj_sw_reg_en_Xhl || reset);
+  wire adj_reg_clk_gated_Xhl;
+
+  nibbler_ClkEnBuf adj_reg_clk_gate
+  (
+    .clk  (adj_reg_clk_gated_Xhl),
+    .rclk (clk),
+    .en_l (adj_gate_en_Xhl)
+  );
+
+  always @(posedge adj_reg_clk_gated_Xhl) begin
+    adj_sw_sh_reg_Xhl <= adj_sw_sh_reg_Xhl_next;
+  end
+
+  // Shift amount storage
+  //----------------------
+<%
+if NIBBLER_P_NBITS == 1:
+  print "      reg bitwise_shamt_reg_Xhl_next; // dummy for bit-serial"
+else:
+  print "      reg [NIBBLER_C_LOG_NBITS-1:0] bitwise_shamt_reg_Xhl_next;"
+%> 
+  reg [5-NIBBLER_C_LOG_NBITS:0] subword_shamt_reg_Xhl; // Signed value
+
+  wire [4:0] shamt_mux_out_Xhl = shamt_mux_sel_Xhl ? 5'b0 : shamt_imm_Xhl; // TODO: Read bottom 5 bits of register to support register-based shifts or change register shift algorithm.
+
+  wire [5-NIBBLER_C_LOG_NBITS:0] subword_shamt_unsigned_Xhl = {1'b0, shamt_mux_out_Xhl[4:NIBBLER_C_LOG_NBITS]};
+  wire [5-NIBBLER_C_LOG_NBITS:0] signed_subword_shamt_Xhl = shift_inst_dir_Xhl ? subword_shamt_unsigned_Xhl : -subword_shamt_unsigned_Xhl;
+
+
+  reg [5-NIBBLER_C_LOG_NBITS:0] subword_shamt_reg_Xhl_next; //signed value
+  always @(*) begin
+    bitwise_shamt_reg_Xhl_next = bitwise_shamt_reg_Xhl;
+    subword_shamt_reg_Xhl_next = subword_shamt_reg_Xhl;
+    if (reset) begin
+<%
+if NIBBLER_P_NBITS == 1:
+  print "      bitwise_shamt_reg_Xhl_next = 1'b0; // dummy for bit-serial"
+else:
+  print "      bitwise_shamt_reg_Xhl_next = {NIBBLER_C_LOG_NBITS{1'b0}};"
+%>
+      subword_shamt_reg_Xhl_next = {(NIBBLER_C_OFFBITS+1){1'b0}};
+    end else if (shamt_reg_en_Xhl) begin
+<%
+if NIBBLER_P_NBITS == 1:
+  print "        bitwise_shamt_reg_Xhl_next = 1'b0; // dummy for bit-serial"
+else:
+  print "        bitwise_shamt_reg_Xhl_next = shamt_mux_out_Xhl[NIBBLER_C_LOG_NBITS-1:0]; // Use unsigned value for bitwise shift"
+%>
+      subword_shamt_reg_Xhl_next = signed_subword_shamt_Xhl;
+    end
+  end
+
+  always @(posedge clk) begin
+    bitwise_shamt_reg_Xhl <= bitwise_shamt_reg_Xhl_next;
+    subword_shamt_reg_Xhl <= subword_shamt_reg_Xhl_next;
+  end
+
+  // Operand A subword offset indexing
+  //-----------------------------------
+  wire [NIBBLER_C_OFFBITS:0] a_offset_mux_Rhl;
+  assign a_offset_mux_Rhl = a_offset_mux_sel_Rhl ? subword_shamt_reg_Xhl : {(NIBBLER_C_OFFBITS+1){1'b0}};
+  // Ignore carry-out. Take advantage of over/underflow
+  wire signed_off_msb_Rhl;
+  assign {signed_off_msb_Rhl, a_subword_idx_Rhl} = a_offset_mux_Rhl + {1'b0, a_subword_off_Rhl}; 
+  always @(posedge clk) begin
+    signed_off_msb_Xhl <= signed_off_msb_Rhl;
+  end
+
+
+  `else
+    assign a_subword_idx_Rhl = a_subword_off_Rhl;
+  `endif
+
+  //-------------------
+  // Memory interface
+  //-------------------
+
+  assign dmemreq_msg_addr = addr_reg_Xhl;// TEMP:to fix
+
+endmodule
+`endif
